@@ -3,7 +3,6 @@ package gyurix.countryroute.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.boot.web.servlet.error.ErrorController;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -12,16 +11,19 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
+
 @ControllerAdvice
 @RestController
 public class ErrorHandler extends ResponseEntityExceptionHandler implements ErrorController {
   private final ObjectMapper mapper = new ObjectMapper();
 
-  @GetMapping(value = "/error",produces = "application/json")
+  @GetMapping(value = "/error", produces = "application/json")
   public ResponseEntity<ObjectNode> getMissingEndpoint() {
-    return ResponseEntity.status(HttpStatus.NOT_FOUND)
+    return ResponseEntity.status(NOT_FOUND)
       .body(mapper.createObjectNode()
-        .put("error", HttpStatus.NOT_FOUND.toString())
+        .put("error", NOT_FOUND.toString())
         .put("reason", "The provided endpoint was not found")
       );
   }
@@ -39,10 +41,10 @@ public class ErrorHandler extends ResponseEntityExceptionHandler implements Erro
         );
     }
     logger.error("Detected Unexpected Error", ex);
-    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+    return ResponseEntity.status(INTERNAL_SERVER_ERROR)
       .header("Content-Type", "application/json")
       .body(mapper.createObjectNode()
-        .put("error", HttpStatus.INTERNAL_SERVER_ERROR.toString())
+        .put("error", INTERNAL_SERVER_ERROR.toString())
         .put("reason", "Unexpected Error")
       );
   }
