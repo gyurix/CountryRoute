@@ -1,32 +1,45 @@
 package gyurix.countryroute.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import gyurix.countryroute.config.RoutingConfig;
 import gyurix.countryroute.dto.CountryData;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
+import gyurix.countryroute.dto.RoutingResponse;
+import lombok.Getter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.concurrent.CompletableFuture;
 
 import static java.util.Comparator.comparingInt;
 
-
 @Service
 public class RoutingService {
-  private final ResponseStatusException BAD_REQUEST = new ResponseStatusException(HttpStatus.BAD_REQUEST);
-  private final Map<String, Integer> countryIds = new HashMap<>();
-  private CountryData[] countries;
+  public static final ResponseStatusException LOADING_DATA = new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Still loading country border data, try again later");
+
+  private final Logger log = LoggerFactory.getLogger(RoutingService.class);
+  private final ObjectMapper mapper = new ObjectMapper();
+
   private int[][] countryBorders;
-  private int countryCount;
+  private CountryData[] countryData;
+  private Map<String, Integer> countryIds;
 
-  public RoutingService(@Value("classpath:countries.json") Resource countriesJson) throws IOException {
-    loadCountries(countriesJson);
-  }
+  private long lastTry = System.currentTimeMillis();
+  @Autowired
+  private RoutingConfig routingConfig;
+  @Getter
+  private boolean succeed;
 
-  public int[] dijkstra(int from, int to) {
+  private int[] dijkstra(int from, int to) {
+    int countryCount = countryData.length;
     int[] dist = new int[countryCount];
     int[] prev = new int[countryCount];
     for (int i = 0; i < countryCount; ++i)
@@ -52,43 +65,74 @@ public class RoutingService {
     return prev;
   }
 
-  public void loadCountries(Resource countriesJson) throws IOException {
-    countries = new ObjectMapper().readerForArrayOf(CountryData.class).readValue(countriesJson.getURL());
-    countryCount = countries.length;
+  @Async("asyncExecutor")
+  public CompletableFuture<Boolean> loadCountries() {
+    try {
+      log.info("Loading countries...");
+      countryData = mapper.readerForArrayOf(CountryData.class).readValue(routingConfig.getCountriesUrl());
+      int countryCount = countryData.length;
 
-    for (int i = 0; i < countryCount; ++i)
-      countryIds.put(countries[i].getName(), i);
+      countryIds = new HashMap<>();
+      for (int i = 0; i < countryCount; ++i)
+        countryIds.put(countryData[i].getName(), i);
 
-    countryBorders = new int[countryCount][];
-    for (int i = 0; i < countryCount; ++i) {
-      CountryData cd = countries[i];
-      String[] borderNames = cd.getBorders();
-      int borderCount = borderNames.length;
+      countryBorders = new int[countryCount][];
+      for (int i = 0; i < countryCount; ++i) {
+        CountryData cd = countryData[i];
+        String[] borderNames = cd.getBorders();
+        int borderCount = borderNames.length;
 
-      countryBorders[i] = new int[borderCount];
-      for (int j = 0; j < borderCount; ++j)
-        countryBorders[i][j] = countryIds.get(borderNames[j]);
+        countryBorders[i] = new int[borderCount];
+        for (int j = 0; j < borderCount; ++j)
+          countryBorders[i][j] = countryIds.get(borderNames[j]);
+      }
+      succeed = true;
+      log.info("Loaded countries successfully");
+      return CompletableFuture.completedFuture(true);
+    } catch (IOException err) {
+      log.error("Failed to load countries", err);
     }
+    return CompletableFuture.completedFuture(false);
   }
 
-  public List<String> route(String fromName, String toName) {
+  public RoutingResponse route(String fromName, String toName) {
+    log.info("Calculating route between countries {} -> {}...", fromName, toName);
+
+    if (!succeed)
+      throw LOADING_DATA;
+
     int from = countryIds.getOrDefault(fromName, -1);
     if (from == -1)
-      throw BAD_REQUEST;
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, String.format("The given origin country (%s) was not found", fromName));
 
     int to = countryIds.getOrDefault(toName, -1);
     if (to == -1)
-      throw BAD_REQUEST;
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, String.format("The given destination country (%s) was not found", toName));
 
-    int[] prev = dijkstra(from,to);
+    int[] prev = dijkstra(from, to);
     if (from != to && prev[to] == 0)
-      throw BAD_REQUEST;
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, String.format("No route can be found between countries %s and %s", fromName, toName));
 
-    LinkedList<String> route = new LinkedList<>();
+    RoutingResponse response = new RoutingResponse();
     while (to != -1) {
-      route.addFirst(countries[to].getName());
+      response.addPrev(countryData[to].getName());
       to = prev[to] - 1;
     }
-    return route;
+
+    log.info("Found route: {}", response.getRoute());
+    return response;
+  }
+
+  public boolean shouldFetchData() {
+    if (succeed)
+      return false;
+
+    long time = System.currentTimeMillis();
+    if (lastTry + routingConfig.getRetryMs() < time) {
+      lastTry = time;
+      return true;
+    }
+
+    return false;
   }
 }
